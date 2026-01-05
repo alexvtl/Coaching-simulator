@@ -26,7 +26,7 @@ export async function prepareIframeSession(params: PrepareParams): Promise<{
     data?: IframeSessionConfig;
     error?: string
 }> {
-    const { scenarioId, mode = "standard", refSessionId, model = "gpt-4o-mini-realtime-preview" } = params;
+    const { scenarioId, mode = "standard", refSessionId, model = "gpt-realtime" } = params;
 
     if (!scenarioId) {
         return { success: false, error: "scenario_id is required" };
@@ -104,7 +104,7 @@ Sois encourageant, précis et actionnable. Parle en français de manière nature
                 voiceId,
                 mode: mode as "standard" | "coach",
                 model,
-                personaName: mode === "coach" ? "Coach IA" : persona.name,
+                personaName: mode === "coach" ? "Pierre Laurent" : persona.name,
             },
         };
 

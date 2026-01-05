@@ -34,12 +34,104 @@ function IframeClient({ scenarioId, mode, refSessionId, model }: IframeClientPro
     const localStreamRef = useRef<MediaStream | null>(null);
     const audioElementRef = useRef<HTMLAudioElement | null>(null);
     const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const ringtoneRef = useRef<{ stop: () => void } | null>(null);
 
     // Conversation tracking
     const conversationRef = useRef<ConversationMessage[]>([]);
     const processedEventIds = useRef<Set<string>>(new Set());
     const sessionDurationRef = useRef<number>(0);
     const initCalledRef = useRef(false);
+    const speakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Generate realistic European phone ringtone using Web Audio API
+    const playRingtone = useCallback(() => {
+        const audioContext = new (window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext)();
+        let isPlaying = true;
+
+        const createRingTone = (startTime: number) => {
+            // European phone ring - two tones at 425Hz with cadence
+            const frequencies = [425, 450]; // Dual tone
+            const oscillators: OscillatorNode[] = [];
+            const gainNode = audioContext.createGain();
+            gainNode.connect(audioContext.destination);
+
+            frequencies.forEach(freq => {
+                const osc = audioContext.createOscillator();
+                osc.frequency.value = freq;
+                osc.type = 'sine';
+                osc.connect(gainNode);
+                oscillators.push(osc);
+            });
+
+            // Ring pattern: 0.4s on, 0.2s off, 0.4s on, then 2s pause
+            const ringDuration = 0.4;
+            const pauseBetween = 0.2;
+
+            // Fade in
+            gainNode.gain.setValueAtTime(0, startTime);
+            gainNode.gain.linearRampToValueAtTime(0.15, startTime + 0.02);
+
+            // First ring
+            gainNode.gain.setValueAtTime(0.15, startTime + ringDuration - 0.02);
+            gainNode.gain.linearRampToValueAtTime(0, startTime + ringDuration);
+
+            // Pause
+            gainNode.gain.setValueAtTime(0, startTime + ringDuration + pauseBetween);
+
+            // Second ring
+            gainNode.gain.linearRampToValueAtTime(0.15, startTime + ringDuration + pauseBetween + 0.02);
+            gainNode.gain.setValueAtTime(0.15, startTime + ringDuration * 2 + pauseBetween - 0.02);
+            gainNode.gain.linearRampToValueAtTime(0, startTime + ringDuration * 2 + pauseBetween);
+
+            oscillators.forEach(osc => {
+                osc.start(startTime);
+                osc.stop(startTime + ringDuration * 2 + pauseBetween + 0.1);
+            });
+        };
+
+        // Play first ring immediately
+        createRingTone(audioContext.currentTime);
+
+        // Repeat every 3 seconds
+        const interval = setInterval(() => {
+            if (!isPlaying) return;
+            createRingTone(audioContext.currentTime);
+        }, 3000);
+
+        ringtoneRef.current = {
+            stop: () => {
+                isPlaying = false;
+                clearInterval(interval);
+                audioContext.close();
+            }
+        };
+    }, []);
+
+    // Inject CSS keyframes for wave animation
+    useEffect(() => {
+        const styleId = 'wave-animation-styles';
+        if (!document.getElementById(styleId)) {
+            const style = document.createElement('style');
+            style.id = styleId;
+            style.textContent = `
+                @keyframes wave-expand {
+                    0% {
+                        transform: scale(1);
+                        opacity: 0.6;
+                    }
+                    100% {
+                        transform: scale(1.4);
+                        opacity: 0;
+                    }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+        return () => {
+            const style = document.getElementById(styleId);
+            if (style) style.remove();
+        };
+    }, []);
 
     // Initialize on mount - with guard to prevent double init (React Strict Mode)
     // Initialize on mount - prepare config (NO session created yet)
@@ -116,6 +208,7 @@ function IframeClient({ scenarioId, mode, refSessionId, model }: IframeClientPro
         const eventId = (event as { event_id?: string }).event_id;
 
         switch (event.type) {
+            // === TRANSCRIPTION EVENTS ===
             case "conversation.item.input_audio_transcription.completed": {
                 const transcript = (event as { transcript?: string }).transcript;
                 if (transcript) addMessageToRef("user", transcript, eventId);
@@ -126,16 +219,46 @@ function IframeClient({ scenarioId, mode, refSessionId, model }: IframeClientPro
                 if (transcript) addMessageToRef("assistant", transcript, eventId);
                 break;
             }
-            case "response.audio.delta":
+
+            // === AI SPEAKING EVENTS (WebRTC) ===
+            case "output_audio_buffer.started":
+                console.log("🟢 AI STARTED SPEAKING (output_audio_buffer.started)");
                 setIsAiSpeaking(true);
                 break;
-            case "response.audio.done":
-            case "response.done":
+
+            case "output_audio_buffer.stopped":
+                console.log("🔴 AI STOPPED SPEAKING (output_audio_buffer.stopped)");
                 setIsAiSpeaking(false);
                 break;
+
+            case "output_audio_buffer.cleared":
+                console.log("🟠 AI INTERRUPTED (output_audio_buffer.cleared)");
+                setIsAiSpeaking(false);
+                break;
+
+            // === FALLBACK for WebSocket mode ===
+            case "response.audio.delta":
+                console.log("🔵 Audio delta received");
+                setIsAiSpeaking(true);
+                break;
+
+            // NOTE: response.audio.done fires before output_audio_buffer.stopped
+            // so we ignore it and rely on output_audio_buffer.stopped for WebRTC
+            case "response.audio.done":
+                console.log("⚪ Audio done (ignored - waiting for output_audio_buffer.stopped)");
+                // Don't set isAiSpeaking to false here!
+                break;
+
+            // === ERROR ===
             case "error":
                 setError(String((event as { error?: { message?: string } }).error?.message) || "Error");
                 break;
+
+            // === LOG ALL OTHER AUDIO-RELATED EVENTS ===
+            default:
+                if (event.type.includes("audio") || event.type.includes("output") || event.type.includes("speech")) {
+                    console.log("📡 Other audio event:", event.type);
+                }
         }
     }, [addMessageToRef]);
 
@@ -147,6 +270,9 @@ function IframeClient({ scenarioId, mode, refSessionId, model }: IframeClientPro
             setError(null);
             conversationRef.current = [];
             processedEventIds.current.clear();
+
+            // Play ringtone while connecting
+            playRingtone();
 
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
@@ -241,6 +367,11 @@ function IframeClient({ scenarioId, mode, refSessionId, model }: IframeClientPro
 
             pc.onconnectionstatechange = () => {
                 if (pc.connectionState === "connected") {
+                    // Stop ringtone when connected
+                    if (ringtoneRef.current) {
+                        ringtoneRef.current.stop();
+                        ringtoneRef.current = null;
+                    }
                     setStatus("connected");
                     durationIntervalRef.current = setInterval(() => {
                         sessionDurationRef.current += 1;
@@ -301,21 +432,13 @@ function IframeClient({ scenarioId, mode, refSessionId, model }: IframeClientPro
     };
 
     // Sound wave animation
-    const SoundWave = () => (
-        <div className="flex items-center justify-center gap-1 h-20">
-            {[...Array(5)].map((_, i) => (
-                <span
-                    key={i}
-                    className="w-1.5 bg-white rounded-full animate-pulse"
-                    style={{
-                        height: `${Math.random() * 40 + 20}px`,
-                        animationDelay: `${i * 0.1}s`,
-                        animationDuration: "0.5s",
-                    }}
-                />
-            ))}
-        </div>
-    );
+    // Format duration as HH:MM:SS
+    const formatDurationLong = (seconds: number) => {
+        const hrs = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        return `${hrs.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+    };
 
     // Loading state
     if (status === "loading" || !config) {
@@ -351,117 +474,240 @@ function IframeClient({ scenarioId, mode, refSessionId, model }: IframeClientPro
         );
     }
 
+    // Extract first name and last name
+    const nameParts = config.personaName.split(' ');
+    const firstName = nameParts[0];
+    const lastName = nameParts.slice(1).join(' ').toUpperCase() || firstName.toUpperCase();
+    const isCoachMode = config.mode === "coach";
+
+    // For coach mode, format as "Coach Prénom Nom"
+    const displayName = isCoachMode
+        ? `Coach ${firstName} ${nameParts.slice(1).join(' ') || ''}`
+        : `${firstName} ${lastName}`;
+
     return (
-        <div className="relative h-screen w-full bg-[#E8EEFF] flex items-center justify-center overflow-hidden font-sans">
+        <div className="relative h-screen w-full bg-white flex flex-col overflow-hidden font-sans">
 
-            {/* Top Left: Persona Badge */}
-            <div className="absolute top-6 left-6 z-20 flex items-center gap-3 bg-[#333C4E] text-white px-4 py-3 rounded-lg shadow-lg">
-                <Volume2 className="w-5 h-5 text-gray-300" />
-                <span className="font-medium text-lg">{config.personaName}</span>
-            </div>
+            {/* Main Content Area */}
+            <div className="flex-1 relative bg-gradient-to-br from-[#E8EEFF] to-[#F0F4FF] rounded-3xl m-4 overflow-hidden shadow-inner">
 
-            {/* Ready State - Call Card Overlay */}
-            {status === "ready" && (
-                <div className="relative z-30 bg-white rounded-3xl shadow-2xl p-12 flex flex-col items-center text-center max-w-md w-full mx-4 animate-in fade-in zoom-in duration-300">
-
-                    {/* Green Phone Icon */}
-                    <div className="mb-6">
-                        <Phone className="w-16 h-16 text-green-500 fill-current" />
+                {/* Top Left: Persona Badge - Show for coach mode (always) or connected state */}
+                {(isCoachMode || status === "connecting" || status === "connected") && (
+                    <div className="absolute top-3 left-3 z-20 flex items-center gap-2 bg-[#333C4E] text-white px-4 py-2.5 rounded-xl shadow-lg">
+                        <Volume2 className="w-5 h-5 text-gray-300" />
+                        <span className="font-semibold text-base">{displayName}</span>
                     </div>
+                )}
 
-                    <h2 className="text-3xl text-gray-900 font-medium mb-2">Appel sortant</h2>
+                {/* Standard Mode: Ready State - Call Card Overlay */}
+                {status === "ready" && !isCoachMode && (
+                    <>
+                        {/* Blur Overlay */}
+                        <div className="absolute inset-0 bg-gray-500/30 backdrop-blur-sm z-20" />
 
-                    <div className="text-gray-500 text-lg mb-1">
-                        {config.personaName.split(' ')[0]}
-                    </div>
-                    <div className="text-gray-900 text-2xl font-bold uppercase mb-8">
-                        {config.personaName.split(' ').slice(1).join(' ') || config.personaName.split(' ')[0]}
-                    </div>
+                        {/* Call Card */}
+                        <div className="absolute inset-0 flex items-center justify-center z-30">
+                            <div className="bg-white rounded-3xl shadow-2xl p-8 flex flex-col items-center text-center max-w-[90%] w-full mx-3">
 
-                    <button
-                        onClick={startSession}
-                        className="w-full bg-[#00D64F] hover:bg-[#00c046] text-white text-xl font-medium py-4 rounded-xl flex items-center justify-center gap-3 transition-colors shadow-lg shadow-green-500/20 mb-6"
-                    >
-                        <Phone className="w-6 h-6 fill-current" />
-                        Démarrer la conversation
-                    </button>
+                                {/* Green Phone Icon */}
+                                <div className="mb-5">
+                                    <svg className="w-20 h-20 text-[#00D64F]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                                        <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                </div>
 
-                    <p className="text-gray-400 text-sm">
-                        Préparez-vous, la conversation démarrera immédiatement
-                    </p>
-                </div>
-            )}
+                                <h2 className="text-3xl text-gray-900 font-semibold mb-3">Appel sortant</h2>
 
-            {/* Connected State - Avatar & Controls */}
-            {(status === "connecting" || status === "connected") && (
-                <div className="relative z-10 flex flex-col items-center animate-in fade-in duration-500">
+                                <div className="text-gray-600 text-xl mb-1">{firstName}</div>
+                                <div className="text-gray-900 text-2xl font-bold mb-6">{lastName}</div>
 
-                    {/* Central Avatar */}
-                    <div className="relative">
-                        {/* Pulse Effect */}
-                        {isAiSpeaking && (
-                            <div className="absolute inset-0 rounded-full border-4 border-blue-400/30 animate-ping scale-110"></div>
-                        )}
-                        <div className={`w-64 h-64 rounded-full border-[6px] transition-colors duration-300 overflow-hidden shadow-2xl ${isAiSpeaking ? 'border-[#8B9CFF]' : 'border-white'}`}>
-                            {/* Placeholder Avatar Image - Using a generic professional one if none provided */}
-                            <img
-                                src="https://images.unsplash.com/photo-1560250097-0b93528c311a?auto=format&fit=crop&q=80&w=256&h=256"
-                                alt={config.personaName}
-                                className="w-full h-full object-cover"
-                            />
+                                <button
+                                    onClick={startSession}
+                                    className="w-full bg-[#00D64F] hover:bg-[#00c046] text-white text-lg font-semibold py-4 px-8 rounded-xl flex items-center justify-center gap-3 transition-all hover:shadow-lg mb-4"
+                                >
+                                    <Phone className="w-6 h-6" />
+                                    Démarrer la conversation
+                                </button>
+
+                                <p className="text-gray-400 text-base">
+                                    Préparez-vous, la conversation démarrera immédiatement
+                                </p>
+                            </div>
                         </div>
-                    </div>
+                    </>
+                )}
 
-                    {status === "connecting" && (
-                        <div className="mt-8 flex items-center gap-3 text-gray-500 bg-white/50 px-6 py-2 rounded-full backdrop-blur-sm">
-                            <Loader2 className="w-5 h-5 animate-spin" />
-                            <span className="font-medium">Connexion en cours...</span>
-                        </div>
-                    )}
+                {/* Coach Mode OR Connected State - Central Avatar */}
+                {(isCoachMode || status === "connecting" || status === "connected") && (
+                    <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="relative">
+                            {/* Sound Wave Rings - Only when AI is speaking */}
+                            {isAiSpeaking && (
+                                <>
+                                    {/* Wave 1 - Innermost */}
+                                    <div
+                                        className="absolute rounded-full border-[3px] border-[#7C8FFF]"
+                                        style={{
+                                            inset: '-20px',
+                                            animation: 'wave-expand 2s ease-out infinite',
+                                        }}
+                                    />
+                                    {/* Wave 2 */}
+                                    <div
+                                        className="absolute rounded-full border-[3px] border-[#7C8FFF]"
+                                        style={{
+                                            inset: '-20px',
+                                            animation: 'wave-expand 2s ease-out infinite 0.5s',
+                                        }}
+                                    />
+                                    {/* Wave 3 */}
+                                    <div
+                                        className="absolute rounded-full border-[3px] border-[#7C8FFF]"
+                                        style={{
+                                            inset: '-20px',
+                                            animation: 'wave-expand 2s ease-out infinite 1s',
+                                        }}
+                                    />
+                                    {/* Wave 4 - Outermost */}
+                                    <div
+                                        className="absolute rounded-full border-[3px] border-[#7C8FFF]"
+                                        style={{
+                                            inset: '-20px',
+                                            animation: 'wave-expand 2s ease-out infinite 1.5s',
+                                        }}
+                                    />
+                                </>
+                            )}
 
-                    {status === "connected" && (
-                        <div className="mt-8 flex flex-col items-center gap-6">
-                            {/* Timer */}
-                            <div className="text-gray-400 text-xl font-mono tabular-nums bg-white/50 px-4 py-1 rounded-full backdrop-blur-sm">
-                                {formatDuration(sessionDuration)}
+                            {/* Static Ring when not speaking */}
+                            {!isAiSpeaking && (
+                                <div className="absolute rounded-full border-4 border-[#C8D4FF]/50" style={{ inset: '-10px' }} />
+                            )}
+
+                            {/* Avatar Container */}
+                            <div
+                                className="w-56 h-56 md:w-64 md:h-64 rounded-full border-[5px] overflow-hidden shadow-xl transition-all duration-300"
+                                style={{
+                                    borderColor: isAiSpeaking ? '#7C8FFF' : 'white',
+                                    boxShadow: isAiSpeaking
+                                        ? '0 0 50px rgba(124, 143, 255, 0.5), 0 25px 50px -12px rgba(0, 0, 0, 0.25)'
+                                        : '0 25px 50px -12px rgba(0, 0, 0, 0.25)'
+                                }}
+                            >
+                                <img
+                                    src="https://images.unsplash.com/photo-1560250097-0b93528c311a?auto=format&fit=crop&q=80&w=300&h=300"
+                                    alt={config.personaName}
+                                    className="w-full h-full object-cover"
+                                />
                             </div>
 
-                            {/* Hangup Button */}
-                            <button
-                                onClick={endSession}
-                                className="w-16 h-16 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center text-white transition-transform hover:scale-110 shadow-lg shadow-red-500/30"
-                            >
-                                <PhoneOff className="w-8 h-8 fill-current" />
-                            </button>
+                            {/* Connecting Overlay */}
+                            {status === "connecting" && (
+                                <div className="absolute inset-0 rounded-full bg-black/30 flex items-center justify-center">
+                                    <Loader2 className="w-10 h-10 text-white animate-spin" />
+                                </div>
+                            )}
                         </div>
-                    )}
-                </div>
-            )}
+                    </div>
+                )}
 
-            {/* Bottom Right: User Video Preview */}
-            <div className="absolute bottom-6 right-6 z-20 w-64 h-48 bg-[#0F172A] rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center border border-gray-800">
-                {/* User Camera Badge */}
-                <div className="absolute top-3 left-3 bg-white/10 backdrop-blur-md px-2 py-1 rounded flex items-center gap-2">
-                    <Camera className="w-3 h-3 text-white" />
-                    <span className="text-white text-xs font-medium">Vous</span>
-                </div>
+                {/* Bottom Right: User Video Preview */}
+                <div className="absolute bottom-3 right-3 z-20 w-32 h-20 bg-[#1E293B] rounded-xl overflow-hidden shadow-xl flex items-center justify-center">
+                    {/* User Badge */}
+                    <div className="absolute top-1.5 left-1.5 flex items-center gap-1 bg-black/40 px-1.5 py-0.5 rounded">
+                        <Camera className="w-2.5 h-2.5 text-white/70" />
+                        <span className="text-white/90 text-[10px] font-medium">Vous</span>
+                    </div>
 
-                {/* Camera Off Icon */}
-                <div className="relative">
-                    <VideoOff className="w-12 h-12 text-gray-600" />
-                    <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-gray-600 rounded-full border-2 border-[#0F172A]"></div>
-                </div>
+                    {/* Camera Off Icon */}
+                    <VideoOff className="w-6 h-6 text-gray-500" />
 
-                {/* Mute Indicator */}
-                <div className="absolute bottom-3 right-3 w-8 h-8 bg-red-500 rounded-full flex items-center justify-center shadow-lg">
-                    <MicOff className="w-4 h-4 text-white" />
+                    {/* Mute Indicator */}
+                    <div className="absolute bottom-1.5 right-1.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center">
+                        <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                            <line x1="12" y1="19" x2="12" y2="23" />
+                            <line x1="8" y1="23" x2="16" y2="23" />
+                            <line x1="1" y1="1" x2="23" y2="23" />
+                        </svg>
+                    </div>
                 </div>
             </div>
 
-            {/* Background Blur Overlay for Ready State */}
-            {status === "ready" && (
-                <div className="absolute inset-0 bg-gray-900/10 backdrop-blur-[2px] z-20 pointer-events-none" />
-            )}
+            {/* Bottom Controls Bar */}
+            <div className="flex items-center justify-center gap-4 py-3 px-4">
+                {/* Coach Mode: Simple Start/End Button */}
+                {isCoachMode ? (
+                    <>
+                        {status === "ready" && (
+                            <button
+                                onClick={startSession}
+                                className="bg-[#00D64F] hover:bg-[#00c046] text-white text-lg font-semibold py-4 px-10 rounded-xl flex items-center justify-center gap-3 transition-all hover:shadow-lg shadow-lg"
+                            >
+                                <Phone className="w-6 h-6" />
+                                Démarrer la conversation
+                            </button>
+                        )}
+                        {(status === "connecting" || status === "connected") && (
+                            <button
+                                onClick={endSession}
+                                disabled={status !== "connected"}
+                                className="bg-red-500 hover:bg-red-600 disabled:bg-red-300 disabled:cursor-not-allowed text-white text-lg font-semibold py-4 px-10 rounded-xl flex items-center justify-center gap-3 transition-all shadow-lg"
+                            >
+                                <PhoneOff className="w-6 h-6" />
+                                Terminer la conversation
+                            </button>
+                        )}
+                    </>
+                ) : (
+                    /* Standard Mode: Full Controls */
+                    <>
+                        {/* Timer */}
+                        <div className="flex items-center gap-2 bg-gray-100 px-5 py-2.5 rounded-full">
+                            <svg className="w-5 h-5 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <circle cx="12" cy="12" r="10" />
+                                <polyline points="12 6 12 12 16 14" />
+                            </svg>
+                            <span className="text-gray-700 font-mono text-base tabular-nums font-medium">
+                                {formatDurationLong(sessionDuration)}
+                            </span>
+                        </div>
+
+                        {/* Microphone Button - Active (green) */}
+                        <button className="w-14 h-14 bg-[#00D64F] hover:bg-[#00c046] rounded-full flex items-center justify-center text-white transition-all shadow-lg">
+                            <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                                <path d="M19 10v2a7 7 0 0 1-14 0v-2" fill="none" stroke="currentColor" strokeWidth="2" />
+                                <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="2" />
+                                <line x1="8" y1="23" x2="16" y2="23" stroke="currentColor" strokeWidth="2" />
+                            </svg>
+                        </button>
+
+                        {/* Video Button - Disabled */}
+                        <button className="w-14 h-14 bg-gray-100 hover:bg-gray-200 rounded-full flex items-center justify-center text-gray-500 transition-all">
+                            <VideoOff className="w-6 h-6" />
+                        </button>
+
+                        {/* Pause Button */}
+                        <button className="w-14 h-14 bg-gray-100 hover:bg-gray-200 rounded-full flex items-center justify-center text-gray-500 transition-all">
+                            <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
+                                <rect x="6" y="4" width="4" height="16" rx="1" />
+                                <rect x="14" y="4" width="4" height="16" rx="1" />
+                            </svg>
+                        </button>
+
+                        {/* Hangup Button */}
+                        <button
+                            onClick={endSession}
+                            disabled={status !== "connected"}
+                            className="w-14 h-14 bg-red-500 hover:bg-red-600 disabled:bg-red-300 disabled:cursor-not-allowed rounded-full flex items-center justify-center text-white transition-all shadow-lg"
+                        >
+                            <PhoneOff className="w-6 h-6" />
+                        </button>
+                    </>
+                )}
+            </div>
         </div>
     );
 }
@@ -485,7 +731,7 @@ export default function IframePage({
                 scenarioId: p.scenario_id,
                 mode: p.mode || "standard",
                 refSessionId: p.ref_session_id,
-                model: p.model || "gpt-4o-mini-realtime-preview",
+                model: p.model || "gpt-realtime",
             });
         });
     }, [searchParams]);
