@@ -320,7 +320,7 @@ export default function IframeClient({ scenarioId, mode, refSessionId, model }: 
                     sdp: offer.sdp,
                     model: config.model,
                     voice: config.voiceId,
-                    instructions: config.systemInstructions,
+                    system_instructions: config.systemInstructions,
                 }),
             });
 
