@@ -729,13 +729,19 @@ export default function IframePage({
     } | null>(null);
 
     useEffect(() => {
+        console.log("🔍 searchParams Promise received:", searchParams);
         searchParams.then((p) => {
+            console.log("🔍 searchParams resolved:", p);
+            console.log("🔍 scenario_id:", p.scenario_id);
+            console.log("🔍 mode:", p.mode);
             setParams({
                 scenarioId: p.scenario_id,
                 mode: p.mode || "standard",
                 refSessionId: p.ref_session_id,
                 model: p.model || "gpt-realtime",
             });
+        }).catch((err) => {
+            console.error("❌ searchParams error:", err);
         });
     }, [searchParams]);
 
