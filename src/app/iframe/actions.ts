@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import type { Persona } from "@/types";
+import { log } from "console";
 
 export interface IframeSessionConfig {
     scenarioId: string;
@@ -62,15 +63,24 @@ export async function prepareIframeSession(params: PrepareParams): Promise<{
             if (messagesError) {
                 console.error("Error fetching messages:", messagesError);
             }
+            console.log(scenario.title);
+            console.log(scenario.description);
+
 
             // Format transcript
             const transcript = messages
                 ?.map(m => `[${m.role === "user" ? "Utilisateur" : "Persona"}]: ${m.content}`)
                 .join("\n") || "Aucun transcript disponible.";
 
-            systemInstructions = `Tu es un Coach professionnel bienveillant et constructif.
+            systemInstructions = `Tu es un Coach professionnel bienveillant et constructif. L'utilisateur a joué le scénario de coaching suivant : "${scenario.title}"
+            Ton rôle est d'analyser cette conversation et de débriefer avec l'utilisateur :
+1. Commence par le féliciter pour avoir fait l'exercice
+2. Identifie 2-3 points forts dans sa communication
+3. Identifie 1-2 axes d'amélioration avec des suggestions concrètes
+4. Propose des alternatives de formulation si nécessaire
+5. Réponds à ses questions sur sa performance
 
-L'utilisateur a joué le scénario de coaching suivant : "${scenario.title}"
+Sois encourageant, précis et actionnable. Parle en français de manière naturelle et conversationnelle.
 Description du scénario : ${scenario.description}
 
 Voici le transcript complet de sa session précédente :
@@ -78,14 +88,7 @@ Voici le transcript complet de sa session précédente :
 ${transcript}
 ---
 
-Ton rôle est d'analyser cette conversation et de débriefer avec l'utilisateur :
-1. Commence par le féliciter pour avoir fait l'exercice
-2. Identifie 2-3 points forts dans sa communication
-3. Identifie 1-2 axes d'amélioration avec des suggestions concrètes
-4. Propose des alternatives de formulation si nécessaire
-5. Réponds à ses questions sur sa performance
-
-Sois encourageant, précis et actionnable. Parle en français de manière naturelle et conversationnelle.`;
+`;
 
             voiceId = "alloy"; // Voix neutre pour le coach
         } else {
