@@ -108,7 +108,11 @@ export async function prepareIframeSession(params: PrepareParams): Promise<{
 
             const systemInstructions = `${coach.system_instructions}
 
-Voici le transcript complet de la session précédente pour t'aider à mieux à coacher l'utilisateur :
+Contexte du scénario sur lequel l'utilisateur s'est entraîné :
+- Titre : ${scenario.title}
+- Description : ${scenario.description || "Aucune description disponible"}
+
+Voici le transcript complet de la session précédente pour t'aider à mieux coacher l'utilisateur :
 ---
 ${transcript}
 ---
