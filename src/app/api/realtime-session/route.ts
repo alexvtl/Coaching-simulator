@@ -87,6 +87,7 @@ export async function POST(request: NextRequest) {
                 modalities: ["audio", "text"],
                 input_audio_format: "pcm16",
                 output_audio_format: "pcm16",
+                max_response_output_tokens: 4096,
                 input_audio_transcription: {
                     model: "whisper-1",
                 },

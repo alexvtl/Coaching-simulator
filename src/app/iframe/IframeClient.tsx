@@ -28,6 +28,8 @@ export default function IframeClient({ scenarioId, mode, refSessionId, model, co
     const [isAiSpeaking, setIsAiSpeaking] = useState(false);
     const [sessionDuration, setSessionDuration] = useState(0);
     const [hasVideoStream, setHasVideoStream] = useState(false);
+    const [isMicMuted, setIsMicMuted] = useState(false);
+    const [isCameraOff, setIsCameraOff] = useState(false);
 
     // WebRTC refs
     const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
@@ -511,6 +513,28 @@ export default function IframeClient({ scenarioId, mode, refSessionId, model, co
         return `${m}:${s.toString().padStart(2, '0')}`;
     };
 
+    // Toggle microphone mute/unmute
+    const toggleMic = useCallback(() => {
+        if (localStreamRef.current) {
+            const audioTrack = localStreamRef.current.getAudioTracks()[0];
+            if (audioTrack) {
+                audioTrack.enabled = !audioTrack.enabled;
+                setIsMicMuted(!audioTrack.enabled);
+            }
+        }
+    }, []);
+
+    // Toggle camera on/off
+    const toggleCamera = useCallback(() => {
+        if (videoStreamRef.current) {
+            const videoTrack = videoStreamRef.current.getVideoTracks()[0];
+            if (videoTrack) {
+                videoTrack.enabled = !videoTrack.enabled;
+                setIsCameraOff(!videoTrack.enabled);
+            }
+        }
+    }, []);
+
     // Loading state
     if (status === "loading") {
         return (
@@ -715,8 +739,8 @@ export default function IframeClient({ scenarioId, mode, refSessionId, model, co
                         <span className="text-white/90 text-sm font-medium">Vous</span>
                     </div>
 
-                    {/* Video Element - Only show when session is active */}
-                    {(status === "connecting" || status === "connected") && hasVideoStream ? (
+                    {/* Video Element - Only show when session is active and camera is on */}
+                    {(status === "connecting" || status === "connected") && hasVideoStream && !isCameraOff ? (
                         <video
                             ref={(el) => {
                                 userVideoRef.current = el;
@@ -730,27 +754,25 @@ export default function IframeClient({ scenarioId, mode, refSessionId, model, co
                             className="w-full h-full object-cover scale-x-[-1]"
                         />
                     ) : (
-                        /* Camera Off Icon - Show when not connected */
+                        /* Camera Off Icon - Show when not connected or camera is off */
                         <VideoOff className="w-12 h-12 text-gray-500" />
                     )}
 
-                    {/* Mic Active Indicator - Green when connected */}
+                    {/* Mic Active Indicator - Green when connected and not muted, Red when muted */}
                     {(status === "connecting" || status === "connected") ? (
-                        <div className="absolute bottom-2.5 right-2.5 w-7 h-7 bg-green-500 rounded-full flex items-center justify-center">
-                            <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                            </svg>
+                        <div className={`absolute bottom-2.5 right-2.5 w-7 h-7 rounded-full flex items-center justify-center ${isMicMuted ? 'bg-red-500' : 'bg-green-500'}`}>
+                            {isMicMuted ? (
+                                <MicOff className="w-3.5 h-3.5 text-white" />
+                            ) : (
+                                <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                                </svg>
+                            )}
                         </div>
                     ) : (
                         /* Mute Indicator - Red when not connected */
                         <div className="absolute bottom-2.5 right-2.5 w-7 h-7 bg-red-500 rounded-full flex items-center justify-center">
-                            <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                                <line x1="12" y1="19" x2="12" y2="23" />
-                                <line x1="8" y1="23" x2="16" y2="23" />
-                                <line x1="1" y1="1" x2="23" y2="23" />
-                            </svg>
+                            <MicOff className="w-3.5 h-3.5 text-white" />
                         </div>
                     )}
                 </div>
@@ -771,14 +793,52 @@ export default function IframeClient({ scenarioId, mode, refSessionId, model, co
                             </button>
                         )}
                         {(status === "connecting" || status === "connected") && (
-                            <button
-                                onClick={endSession}
-                                disabled={status !== "connected"}
-                                className="bg-red-500 hover:bg-red-600 disabled:bg-red-300 disabled:cursor-not-allowed text-white text-base font-semibold py-3 px-6 rounded-lg flex items-center justify-center gap-2 transition-all shadow-md"
-                            >
-                                <PhoneOff className="w-5 h-5" />
-                                Terminer la conversation
-                            </button>
+                            <>
+                                {/* Microphone Toggle */}
+                                <button
+                                    onClick={toggleMic}
+                                    className={`w-11 h-11 rounded-full flex items-center justify-center transition-all shadow-md ${isMicMuted
+                                            ? 'bg-red-500 hover:bg-red-600 text-white'
+                                            : 'bg-[#00D64F] hover:bg-[#00c046] text-white'
+                                        }`}
+                                >
+                                    {isMicMuted ? (
+                                        <MicOff className="w-5 h-5" />
+                                    ) : (
+                                        <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                                            <path d="M19 10v2a7 7 0 0 1-14 0v-2" fill="none" stroke="currentColor" strokeWidth="2" />
+                                            <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="2" />
+                                            <line x1="8" y1="23" x2="16" y2="23" stroke="currentColor" strokeWidth="2" />
+                                        </svg>
+                                    )}
+                                </button>
+
+                                {/* Camera Toggle */}
+                                <button
+                                    onClick={toggleCamera}
+                                    className={`w-11 h-11 rounded-full flex items-center justify-center transition-all shadow-md ${isCameraOff
+                                            ? 'bg-red-500 hover:bg-red-600 text-white'
+                                            : 'bg-[#00D64F] hover:bg-[#00c046] text-white'
+                                        }`}
+                                >
+                                    {isCameraOff ? (
+                                        <VideoOff className="w-5 h-5" />
+                                    ) : (
+                                        <Camera className="w-5 h-5" />
+                                    )}
+                                </button>
+
+                                {/* End Session Button */}
+                                <button
+                                    onClick={endSession}
+                                    disabled={status !== "connected"}
+                                    className="bg-red-500 hover:bg-red-600 disabled:bg-red-300 disabled:cursor-not-allowed text-white text-base font-semibold py-3 px-6 rounded-lg flex items-center justify-center gap-2 transition-all shadow-md"
+                                >
+                                    <PhoneOff className="w-5 h-5" />
+                                    Terminer la conversation
+                                </button>
+                            </>
                         )}
                     </>
                 ) : (
@@ -795,19 +855,39 @@ export default function IframeClient({ scenarioId, mode, refSessionId, model, co
                             </span>
                         </div>
 
-                        {/* Microphone Button - Active (green) */}
-                        <button className="w-11 h-11 bg-[#00D64F] hover:bg-[#00c046] rounded-full flex items-center justify-center text-white transition-all shadow-md">
-                            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                                <path d="M19 10v2a7 7 0 0 1-14 0v-2" fill="none" stroke="currentColor" strokeWidth="2" />
-                                <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="2" />
-                                <line x1="8" y1="23" x2="16" y2="23" stroke="currentColor" strokeWidth="2" />
-                            </svg>
+                        {/* Microphone Button - Toggle */}
+                        <button
+                            onClick={toggleMic}
+                            className={`w-11 h-11 rounded-full flex items-center justify-center transition-all shadow-md ${isMicMuted
+                                ? 'bg-red-500 hover:bg-red-600 text-white'
+                                : 'bg-[#00D64F] hover:bg-[#00c046] text-white'
+                                }`}
+                        >
+                            {isMicMuted ? (
+                                <MicOff className="w-5 h-5" />
+                            ) : (
+                                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" fill="none" stroke="currentColor" strokeWidth="2" />
+                                    <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="2" />
+                                    <line x1="8" y1="23" x2="16" y2="23" stroke="currentColor" strokeWidth="2" />
+                                </svg>
+                            )}
                         </button>
 
-                        {/* Video Button - Disabled */}
-                        <button className="w-11 h-11 bg-gray-100 hover:bg-gray-200 rounded-full flex items-center justify-center text-gray-500 transition-all">
-                            <VideoOff className="w-5 h-5" />
+                        {/* Video Button - Toggle */}
+                        <button
+                            onClick={toggleCamera}
+                            className={`w-11 h-11 rounded-full flex items-center justify-center transition-all ${isCameraOff
+                                ? 'bg-red-500 hover:bg-red-600 text-white shadow-md'
+                                : 'bg-[#00D64F] hover:bg-[#00c046] text-white shadow-md'
+                                }`}
+                        >
+                            {isCameraOff ? (
+                                <VideoOff className="w-5 h-5" />
+                            ) : (
+                                <Camera className="w-5 h-5" />
+                            )}
                         </button>
 
                         {/* Pause Button */}

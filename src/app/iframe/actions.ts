@@ -118,6 +118,7 @@ ${transcript}
 ---
 `;
             console.log("📝 Coach mode - Using coach:", coach.name);
+            console.log("📝 Coach systemInstructions:", systemInstructions);
 
             return {
                 success: true,
