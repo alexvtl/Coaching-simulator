@@ -669,14 +669,14 @@ export default function IframeClient({ scenarioId, mode, refSessionId, model, co
     return (
         <div className="relative h-screen w-full bg-white flex flex-col overflow-hidden font-sans">
 
-            {/* Main Content Area - Different gradient for coach mode */}
+            {/* Main Content Area - Different background for coach mode */}
             <div
                 className="flex-1 relative rounded-3xl m-4 overflow-hidden shadow-inner"
                 style={isCoachMode ? {
-                    background: `
-                        radial-gradient(ellipse at bottom right, #eeede9 0%, transparent 50%),
-                        linear-gradient(135deg, #fef2c6 0%, #ffeed2 50%, #ffeed2 100%)
-                    `
+                    backgroundImage: 'url(/bg_coach_ai.png)',
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
+                    backgroundRepeat: 'no-repeat'
                 } : {
                     background: 'linear-gradient(to bottom right, #E8EEFF, #F0F4FF)'
                 }}

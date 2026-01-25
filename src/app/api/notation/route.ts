@@ -17,48 +17,150 @@ export async function OPTIONS() {
 const NOTATION_TABS = ['synthese', 'methodo', 'discours', 'transcription'] as const;
 type NotationTab = typeof NOTATION_TABS[number];
 
-// Interface pour le résultat global
-interface NotationGlobal {
-    synthese?: Record<string, unknown>;
-    methodo?: Record<string, unknown>;
-    discours?: Record<string, unknown>;
-    transcription?: Record<string, unknown>;
-}
+// Types pour le calcul de score global
+type DagoCode = "D" | "A" | "G" | "O";
 
 type MethodoEtape = {
+    numero?: number;
+    code?: DagoCode;
     titre: string;
     score: number; // 0..100
+    score_max?: number; // 100
+    poids?: number;
+    contribution_score_global?: number;
+    timecode_start?: string;
+    timecode_end?: string;
+    criteres_reussis?: string[];
+    criteres_a_ameliorer?: string[];
+    commentaire_coach?: string;
+    messages_ids?: number[];
 };
 
-function addGlobalScoreToSynthese(json: NotationGlobal) {
-    const MAX_POINTS = { D: 20, A: 35, G: 25, O: 20 } as const;
+type NotationPayload = {
+    score_global?: Record<string, unknown>;
+    synthese?: Record<string, unknown>;
+    methodo?: { etapes?: MethodoEtape[];[k: string]: unknown };
+    discours?: Record<string, unknown>;
+    transcription?: Record<string, unknown>;
+};
 
-    const methodo = json.methodo as unknown as { etapes?: MethodoEtape[] } | undefined;
-    const etapes = methodo?.etapes ?? [];
+const SCORE_WEIGHTS = {
+    demarrer_passer_barrage: 0.20,
+    accrocher: 0.30,
+    gerer_objections: 0.25,
+    obtenir_rendez_vous: 0.25,
+} as const;
 
-    if (!Array.isArray(etapes) || etapes.length === 0) return json;
+// --- Fonctions utilitaires pour le calcul de score ---
+function clamp0_100(n: number) {
+    if (typeof n !== "number" || Number.isNaN(n)) return 0;
+    return Math.max(0, Math.min(100, n));
+}
 
-    const getPctByPrefix = (prefix: 1 | 2 | 3 | 4): number => {
-        const e = etapes.find((x) => new RegExp(`^\\s*${prefix}\\s*[—-]`).test(x.titre));
-        const v = e?.score;
-        if (typeof v !== "number" || Number.isNaN(v)) return 0;
-        return Math.max(0, Math.min(100, v));
+function round2(n: number) {
+    return Math.round(n * 100) / 100;
+}
+
+function roundToStep(n: number, step: 1 | 5 = 5) {
+    return Math.round(n / step) * step;
+}
+
+function niveauPerformance(score: number) {
+    if (score <= 40) return "faible";
+    if (score <= 65) return "moyen";
+    if (score <= 85) return "bon";
+    return "excellent";
+}
+
+function buildInterpretation(detail: Array<{ code: DagoCode; score_etape: number; poids: number }>) {
+    const poidsManquants = detail.filter(d => d.score_etape === 0).reduce((acc, d) => acc + d.poids, 0);
+    const poidsManquantsPct = Math.round(poidsManquants * 100);
+
+    const d = detail.find(x => x.code === "D")?.score_etape ?? 0;
+    const a = detail.find(x => x.code === "A")?.score_etape ?? 0;
+    const g = detail.find(x => x.code === "G")?.score_etape ?? 0;
+    const o = detail.find(x => x.code === "O")?.score_etape ?? 0;
+
+    const lacunes: string[] = [];
+    if (a === 0) lacunes.push("la phase d'accroche (0%)");
+    if (o === 0) lacunes.push("l'obtention du rendez-vous (0%)");
+    const lacunesTxt = lacunes.length ? lacunes.join(" et ") : "certaines étapes clés";
+
+    return `L'appel présente des lacunes importantes dans ${lacunesTxt}, qui pèsent lourdement sur le score global (${poidsManquantsPct}% du poids total). Malgré un démarrage (${d}%) et une gestion des objections (${g}%), l'absence d'accroche et/ou de closing structuré limite fortement l'efficacité commerciale.`;
+}
+
+function getScoreFromEtapes(etapes: MethodoEtape[], code: DagoCode): number {
+    const byCode = etapes.find(e => e.code === code);
+    if (byCode) return clamp0_100(byCode.score);
+
+    const prefix = code === "D" ? 1 : code === "A" ? 2 : code === "G" ? 3 : 4;
+    const byPrefix = etapes.find(e => new RegExp(`^\\s*${prefix}\\s*[—-]`).test(e.titre));
+    return clamp0_100(byPrefix?.score ?? 0);
+}
+
+function injectScoreGlobal(notation: NotationPayload, roundStep: 1 | 5 = 5) {
+    const etapes = notation.methodo?.etapes ?? [];
+    if (!Array.isArray(etapes) || etapes.length === 0) return notation;
+
+    const scoreD = getScoreFromEtapes(etapes, "D");
+    const scoreA = getScoreFromEtapes(etapes, "A");
+    const scoreG = getScoreFromEtapes(etapes, "G");
+    const scoreO = getScoreFromEtapes(etapes, "O");
+
+    const detail_calcul = [
+        { etape: "Démarrer et passer le barrage", code: "D" as const, score_etape: scoreD, poids: SCORE_WEIGHTS.demarrer_passer_barrage, contribution: round2(scoreD * SCORE_WEIGHTS.demarrer_passer_barrage) },
+        { etape: "Accrocher", code: "A" as const, score_etape: scoreA, poids: SCORE_WEIGHTS.accrocher, contribution: round2(scoreA * SCORE_WEIGHTS.accrocher) },
+        { etape: "Gérer les objections", code: "G" as const, score_etape: scoreG, poids: SCORE_WEIGHTS.gerer_objections, contribution: round2(scoreG * SCORE_WEIGHTS.gerer_objections) },
+        { etape: "Obtenir le rendez-vous", code: "O" as const, score_etape: scoreO, poids: SCORE_WEIGHTS.obtenir_rendez_vous, contribution: round2(scoreO * SCORE_WEIGHTS.obtenir_rendez_vous) }
+    ];
+
+    const rawGlobal = detail_calcul.reduce((acc, d) => acc + d.contribution, 0);
+    const global = roundToStep(rawGlobal, roundStep);
+
+    // Injecter poids + contribution sur chaque étape methodo
+    for (const e of etapes) {
+        const inferred: DagoCode | undefined =
+            e.code ??
+            (/^\s*1\s*[—-]/.test(e.titre) ? "D" :
+                /^\s*2\s*[—-]/.test(e.titre) ? "A" :
+                    /^\s*3\s*[—-]/.test(e.titre) ? "G" :
+                        /^\s*4\s*[—-]/.test(e.titre) ? "O" : undefined);
+
+        if (!inferred) continue;
+        e.code = inferred;
+        e.score = clamp0_100(e.score);
+        e.score_max = 100;
+
+        const poids =
+            inferred === "D" ? SCORE_WEIGHTS.demarrer_passer_barrage :
+                inferred === "A" ? SCORE_WEIGHTS.accrocher :
+                    inferred === "G" ? SCORE_WEIGHTS.gerer_objections :
+                        SCORE_WEIGHTS.obtenir_rendez_vous;
+
+        e.poids = poids;
+        e.contribution_score_global = round2(e.score * poids);
+    }
+
+    notation.score_global = {
+        valeur: global,
+        unite: "score_sur_100",
+        methode_calcul: "moyenne_ponderee_etapes_methodologiques",
+        "pondérations": { ...SCORE_WEIGHTS },
+        detail_calcul,
+        score_process: global,
+        score_execution_discours: null,
+        interpretation: buildInterpretation(detail_calcul.map(d => ({ code: d.code, score_etape: d.score_etape, poids: d.poids }))),
+        niveau_performance: niveauPerformance(global),
+        seuils: {
+            faible: "0-40",
+            moyen: "41-65",
+            bon: "66-85",
+            excellent: "86-100"
+        },
+        regles_exclusion: ["SyntheseGlobale", "AvisPersonaIA", "AnalyseDiscours", "Transcription"]
     };
 
-    const roundToHalf = (x: number) => Math.round(x * 2) / 2;
-
-    const pointsD = roundToHalf((getPctByPrefix(1) / 100) * MAX_POINTS.D);
-    const pointsA = roundToHalf((getPctByPrefix(2) / 100) * MAX_POINTS.A);
-    const pointsG = roundToHalf((getPctByPrefix(3) / 100) * MAX_POINTS.G);
-    const pointsO = roundToHalf((getPctByPrefix(4) / 100) * MAX_POINTS.O);
-
-    const globalPoints = roundToHalf(pointsD + pointsA + pointsG + pointsO); // 0..100
-
-    json.synthese = json.synthese ?? { onglet: "SyntheseGlobale" };
-    // Champ demandé (sur 100)
-    json.synthese.notation_globale = globalPoints;
-
-    return json;
+    return notation;
 }
 
 // =============================================
@@ -224,7 +326,7 @@ export async function POST(req: Request) {
                         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
                     },
                     body: JSON.stringify({
-                        model: "gpt-4o",
+                        model: "gpt-4.1",
                         instructions: promptText,
                         input: [
                             {
@@ -294,28 +396,29 @@ Analyse cet appel et réponds uniquement avec un JSON valide.`
         const results = await Promise.all(NOTATION_TABS.map(tab => callOpenAI(tab)));
 
         // 6. CONSTRUIRE LE JSON GLOBAL
-        const notationGlobal: NotationGlobal = {};
+        const notation: NotationPayload = {};
         const errors: string[] = [];
 
         results.forEach(({ tab, result, error }) => {
             if (result) {
-                notationGlobal[tab] = result;
+                notation[tab] = result;
             } else if (error) {
                 errors.push(`${tab}: ${error}`);
             }
         });
 
-        addGlobalScoreToSynthese(notationGlobal);
+        // ✅ Injecter score_global + contributions D/A/G/O (backend)
+        injectScoreGlobal(notation, 5);
 
-        console.log("📊 Notation global built:", Object.keys(notationGlobal));
+        console.log("📊 Notation global built:", Object.keys(notation));
 
         // 7. SAUVEGARDER EN DB
-        if (Object.keys(notationGlobal).length > 0) {
+        if (Object.keys(notation).length > 0) {
             console.log("📊 Saving notation to session:", effectiveSessionId);
 
             const { error: updateError } = await supabase
                 .from('sessions')
-                .update({ notation_json: notationGlobal })
+                .update({ notation_json: notation })
                 .eq('id', effectiveSessionId);
 
             if (updateError) {
@@ -332,9 +435,9 @@ Analyse cet appel et réponds uniquement avec un JSON valide.`
         return setCorsHeaders(NextResponse.json({
             success: true,
             session_id: effectiveSessionId,
-            tabs_processed: Object.keys(notationGlobal),
+            tabs_processed: Object.keys(notation),
             errors: errors.length > 0 ? errors : undefined,
-            notation: notationGlobal
+            notation
         }));
 
     } catch (error) {
@@ -374,10 +477,22 @@ export async function GET(req: Request) {
 
         const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-        // Récupérer la dernière session complétée du scénario
+        // Récupérer la dernière session complétée du scénario avec le persona
         const { data: session, error } = await supabase
             .from('sessions')
-            .select('id, scenario_id, notation_json, created_at, scenarios(title)')
+            .select(`
+                id, 
+                scenario_id, 
+                notation_json, 
+                created_at, 
+                duration_seconds,
+                scenarios(
+                    title, 
+                    description,
+                    difficulty_level,
+                    personas(name, role, company)
+                )
+            `)
             .eq('scenario_id', scenarioId)
             .eq('status', 'completed')
             .not('notation_json', 'is', null)
@@ -394,7 +509,48 @@ export async function GET(req: Request) {
             );
         }
 
-        const scenario = session.scenarios as unknown as { title: string } | null;
+        // Récupérer les messages pour calculer start_time et end_time
+        const { data: messages } = await supabase
+            .from('messages')
+            .select('timestamp')
+            .eq('session_id', session.id)
+            .order('timestamp', { ascending: true });
+
+        // Calcul des horaires de l'appel
+        let startTime = "";
+        let endTime = "";
+
+        if (messages && messages.length > 0) {
+            const firstMessage = new Date(messages[0].timestamp);
+            const lastMessage = new Date(messages[messages.length - 1].timestamp);
+
+            startTime = firstMessage.toLocaleTimeString('fr-FR', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+            endTime = lastMessage.toLocaleTimeString('fr-FR', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+
+        // Formatage de la durée
+        const durationSeconds = session.duration_seconds || 0;
+        const minutes = Math.floor(durationSeconds / 60);
+        const seconds = durationSeconds % 60;
+        const durationFormatted = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+
+        // Extraction des données du scénario et persona
+        const scenario = session.scenarios as unknown as {
+            title: string;
+            description: string | null;
+            difficulty_level: string | null;
+            personas: { name: string; role: string | null; company: string | null } | null;
+        } | null;
+
+        const persona = scenario?.personas;
 
         return setCorsHeaders(NextResponse.json({
             success: true,
@@ -402,6 +558,16 @@ export async function GET(req: Request) {
             scenario_id: session.scenario_id,
             scenario_title: scenario?.title || null,
             created_at: session.created_at,
+            call_metadata: {
+                start_time: startTime,
+                end_time: endTime,
+                duration_seconds: durationSeconds,
+                duration_formatted: durationFormatted,
+                persona_name: persona?.name || null,
+                persona_role: persona?.role || null,
+                persona_company: persona?.company || null,
+                difficulty_level: scenario?.difficulty_level || null
+            },
             notation: session.notation_json
         }));
 
