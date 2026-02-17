@@ -46,8 +46,17 @@ Tu vas discuter avec l'apprenant de ton appréciation globale de sa dernière se
 Tu te bases sur l'analyse détaillée qui a été faite pour lui donner un feedback constructif.
 Tu restes dans un ton pédagogique, encourageant mais honnête.`;
 
-// Note: Le prompt pour variant=coach (persona qui donne son avis) est généré dynamiquement
-// avec le nom du persona dans prepareIframeSession
+const FALLBACK_PERSONA_VARIANT_FEEDBACK_PROMPT = `Après notre dernière conversation, tu donnes ton avis et ton ressenti émotionnel EN TANT QUE {{persona_name}} :
+- Comment tu as perçu l'échange
+- Ce que tu as apprécié dans l'approche de l'utilisateur
+- Ce que tu n'as pas apprécié dans l'approche de l'utilisateur
+- Ce qui aurait pu être fait différemment selon toi
+- Tes conseils
+
+Tu parles à la première personne en restant dans ton personnage ("j'ai trouvé que...", "Personnellement, je pense que...").`;
+
+// Note: Les prompts sont stockés dans la table 'prompts' de la DB
+// Titres: coach.before_training, coach.after_training, coach.notation.synthese, persona.variant.feedback
 // Les descriptions des étapes sont maintenant stockées dans le champ coaching_steps de la table sessions
 
 // Step 1: Prepare session config (NO DB write) - called on page load
@@ -495,17 +504,19 @@ ${transcript}
                 }
             }
 
+            // Fetch prompt from DB
+            const { data: variantPromptData } = await supabase
+                .from("prompts")
+                .select("prompt")
+                .eq("title", "persona.variant.feedback")
+                .single();
+
+            const variantBasePrompt = (variantPromptData?.prompt || FALLBACK_PERSONA_VARIANT_FEEDBACK_PROMPT)
+
             // Le persona reste dans son rôle et donne son avis
             const systemInstructions = `Tu es ${persona.name}. Tu restes dans ton personnage.
 
-Après notre dernière conversation, tu donnes ton avis et ton ressenti émotionnel EN TANT QUE ${persona.name} :
-- Comment tu as perçu l'échange
-- Ce que tu as apprécié dans l'approche de l'utilisateur
-- Ce que tu n'as pas apprécié dans l'approche de l'utilisateur
-- Ce qui aurait pu être fait différemment selon toi
-- Tes conseils
-
-Tu parles à la première personne en restant dans ton personnage ("j'ai trouvé que...", "Personnellement, je pense que...").
+${variantBasePrompt}
 
 ${persona.system_instructions || ""}
 
